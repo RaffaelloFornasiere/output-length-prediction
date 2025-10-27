@@ -126,16 +126,36 @@ def main():
             print(f"\nError on prompt '{prompt}': {e}")
             continue
 
-    # Save data
-    print(f"\nSaving {len(all_hidden_states)} data points...")
+    # Convert to numpy arrays
+    print(f"\nProcessing {len(all_hidden_states)} data points...")
+    hidden_states_array = np.array(all_hidden_states)
+    remaining_tokens_array = np.array(all_remaining_tokens)
 
-    # Save as numpy arrays
-    np.save(OUTPUT_DIR / "hidden_states.npy", np.array(all_hidden_states))
-    np.save(OUTPUT_DIR / "remaining_tokens.npy", np.array(all_remaining_tokens))
+    # Shuffle and split into train/val
+    np.random.seed(42)
+    indices = np.arange(len(hidden_states_array))
+    np.random.shuffle(indices)
 
-    print(f"Saved {len(all_hidden_states)} data points to {OUTPUT_DIR}")
-    print(f"Hidden states shape: {np.array(all_hidden_states).shape}")
-    print(f"Remaining tokens shape: {np.array(all_remaining_tokens).shape}")
+    # 90/10 split
+    split_idx = int(0.9 * len(indices))
+    train_indices = indices[:split_idx]
+    val_indices = indices[split_idx:]
+
+    # Split data
+    train_hidden_states = hidden_states_array[train_indices]
+    train_remaining_tokens = remaining_tokens_array[train_indices]
+    val_hidden_states = hidden_states_array[val_indices]
+    val_remaining_tokens = remaining_tokens_array[val_indices]
+
+    # Save splits
+    print(f"Saving train ({len(train_indices)}) and val ({len(val_indices)}) splits...")
+    np.save(OUTPUT_DIR / "train_hidden_states.npy", train_hidden_states)
+    np.save(OUTPUT_DIR / "train_remaining_tokens.npy", train_remaining_tokens)
+    np.save(OUTPUT_DIR / "val_hidden_states.npy", val_hidden_states)
+    np.save(OUTPUT_DIR / "val_remaining_tokens.npy", val_remaining_tokens)
+
+    print(f"Saved to {OUTPUT_DIR}")
+    print(f"Train: {train_hidden_states.shape}, Val: {val_hidden_states.shape}")
 
 
 if __name__ == "__main__":
