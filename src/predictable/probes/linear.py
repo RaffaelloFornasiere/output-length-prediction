@@ -20,9 +20,14 @@ DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 class HiddenStatesDataset(Dataset):
     """Dataset for hidden states and remaining tokens."""
 
-    def __init__(self, hidden_states: np.ndarray, remaining_tokens: np.ndarray):
+    def __init__(self, hidden_states: np.ndarray, remaining_tokens: np.ndarray, use_log: bool = True):
         self.hidden_states = torch.FloatTensor(hidden_states)
-        self.remaining_tokens = torch.FloatTensor(remaining_tokens).unsqueeze(1)  # Shape: (N, 1)
+        # Transform to log space: log(remaining + 1)
+        if use_log:
+            self.remaining_tokens = torch.log(torch.FloatTensor(remaining_tokens) + 1).unsqueeze(1)
+        else:
+            self.remaining_tokens = torch.FloatTensor(remaining_tokens).unsqueeze(1)
+        self.use_log = use_log
 
     def __len__(self):
         return len(self.hidden_states)
@@ -42,7 +47,7 @@ class LinearProbe(nn.Module):
         return self.linear(x)
 
 
-def load_data(batch_size):
+def load_data(batch_size, use_log=True):
     """Load train and val splits."""
     print("Loading data...")
     train_hidden = np.load(DATA_DIR / "train_hidden_states.npy")
@@ -52,13 +57,14 @@ def load_data(batch_size):
 
     print(f"Train: {train_hidden.shape}, Val: {val_hidden.shape}")
 
-    train_dataset = HiddenStatesDataset(train_hidden, train_labels)
-    val_dataset = HiddenStatesDataset(val_hidden, val_labels)
+    train_dataset = HiddenStatesDataset(train_hidden, train_labels, use_log=use_log)
+    val_dataset = HiddenStatesDataset(val_hidden, val_labels, use_log=use_log)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    return train_loader, val_loader
+    # Store original labels for metric computation
+    return train_loader, val_loader, val_labels
 
 
 def train_epoch(model, train_loader, criterion, optimizer):
@@ -84,12 +90,12 @@ def train_epoch(model, train_loader, criterion, optimizer):
     return total_loss / len(train_loader)
 
 
-def evaluate(model, val_loader, criterion):
+def evaluate(model, val_loader, criterion, original_labels, use_log=True):
     """Evaluate on validation set."""
     model.eval()
     total_loss = 0
-    all_predictions = []
-    all_labels = []
+    all_predictions_log = []
+    all_labels_log = []
 
     with torch.no_grad():
         for hidden_states, labels in val_loader:
@@ -100,22 +106,43 @@ def evaluate(model, val_loader, criterion):
             loss = criterion(predictions, labels)
 
             total_loss += loss.item()
-            all_predictions.append(predictions.cpu())
-            all_labels.append(labels.cpu())
+            all_predictions_log.append(predictions.cpu())
+            all_labels_log.append(labels.cpu())
 
-    # Calculate metrics
-    all_predictions = torch.cat(all_predictions)
-    all_labels = torch.cat(all_labels)
+    # Concatenate all predictions and labels
+    all_predictions_log = torch.cat(all_predictions_log)
+    all_labels_log = torch.cat(all_labels_log)
 
+    # Convert back from log space to original space
+    if use_log:
+        all_predictions = torch.exp(all_predictions_log) - 1
+        all_labels = torch.FloatTensor(original_labels).unsqueeze(1)
+    else:
+        all_predictions = all_predictions_log
+        all_labels = all_labels_log
+
+    # Absolute metrics (in original space)
     mae = torch.mean(torch.abs(all_predictions - all_labels)).item()
     rmse = torch.sqrt(torch.mean((all_predictions - all_labels) ** 2)).item()
 
-    # R² score
+    # Relative metrics - only compute for samples where actual > 5 to avoid division issues
+    mask = all_labels.squeeze() > 5
+    if mask.sum() > 0:
+        filtered_predictions = all_predictions[mask]
+        filtered_labels = all_labels[mask]
+        relative_errors = torch.abs(filtered_predictions - filtered_labels) / torch.abs(filtered_labels)
+        mape = torch.mean(relative_errors).item() * 100  # Mean Absolute Percentage Error (%)
+        rel_mae = torch.mean(relative_errors).item()
+    else:
+        mape = 0.0
+        rel_mae = 0.0
+
+    # R² score (in original space)
     ss_res = torch.sum((all_labels - all_predictions) ** 2)
     ss_tot = torch.sum((all_labels - torch.mean(all_labels)) ** 2)
     r2 = 1 - (ss_res / ss_tot)
 
-    return total_loss / len(val_loader), mae, rmse, r2.item()
+    return total_loss / len(val_loader), mae, rmse, r2.item(), mape, rel_mae
 
 
 def main():
@@ -129,8 +156,9 @@ def main():
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Load data
-    train_loader, val_loader = load_data(args.batch_size)
+    # Load data with log transformation
+    use_log = True
+    train_loader, val_loader, val_labels = load_data(args.batch_size, use_log=use_log)
 
     # Infer hidden_dim from data
     sample_batch = next(iter(train_loader))
@@ -140,6 +168,7 @@ def main():
     print(f"\nInitializing linear probe on {DEVICE}...")
     print(f"Hyperparameters: epochs={args.epochs}, batch_size={args.batch_size}, lr={args.lr}")
     print(f"Hidden dimension: {hidden_dim}")
+    print(f"Using log-space predictions: {use_log}")
     model = LinearProbe(hidden_dim).to(DEVICE)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -149,23 +178,23 @@ def main():
 
     for epoch in tqdm(range(args.epochs), desc="Training"):
         train_loss = train_epoch(model, train_loader, criterion, optimizer)
-        val_loss, mae, rmse, r2 = evaluate(model, val_loader, criterion)
+        val_loss, mae, rmse, r2, mape, rel_mae = evaluate(model, val_loader, criterion, val_labels, use_log=use_log)
 
         # Print metrics every 5 epochs
         if (epoch + 1) % 5 == 0 or epoch == 0:
             tqdm.write(
                 f"Epoch {epoch+1:5d} | "
                 f"Train Loss: {train_loss:.4f} | "
-                f"Val Loss: {val_loss:.4f} MAE: {mae:.4f} RMSE: {rmse:.4f} R²: {r2:.4f}"
+                f"Val MAE: {mae:.4f} RMSE: {rmse:.4f} R²: {r2:.4f} MAPE: {mape:.2f}% RelMAE: {rel_mae:.4f}"
             )
 
     # Save final model with metrics
-    final_val_loss, final_mae, final_rmse, final_r2 = evaluate(model, val_loader, criterion)
-    filename = f"linear_e{args.epochs}_bs{args.batch_size}_lr{args.lr}_mae{final_mae:.2f}_r2{final_r2:.2f}.pt"
+    final_val_loss, final_mae, final_rmse, final_r2, final_mape, final_rel_mae = evaluate(model, val_loader, criterion, val_labels, use_log=use_log)
+    filename = f"linear_log_e{args.epochs}_bs{args.batch_size}_lr{args.lr}_mae{final_mae:.2f}_mape{final_mape:.1f}_r2{final_r2:.2f}.pt"
     torch.save(model.state_dict(), OUTPUT_DIR / filename)
 
     print(f"\nTraining complete!")
-    print(f"Final metrics - Val Loss: {final_val_loss:.4f}, MAE: {final_mae:.4f}, R²: {final_r2:.4f}")
+    print(f"Final metrics - MAE: {final_mae:.4f}, MAPE: {final_mape:.2f}%, RelMAE: {final_rel_mae:.4f}, R²: {final_r2:.4f}")
     print(f"Model saved to {OUTPUT_DIR / filename}")
 
 

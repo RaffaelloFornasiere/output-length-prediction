@@ -25,11 +25,19 @@ COUNTS = list(range(5, 50))  # X: how many times to print
 WORDS = ["hello", "world", "cat", "dog", "python", "test", "apple", "blue", "sun", "code"]
 
 
-def generate_prompt(count: int, word: str) -> str:
-    """Generate a predictable task prompt."""
-    prompt = f"""<|start_header_id|>system<|end_header_id|>
-print {count} times the word "{word}". only this, no extra text
-<|eot_id|><|start_header _id|>assistant<|end_header_id|>"""
+def generate_prompt(tokenizer, count: int, word: str) -> str:
+    """Generate a predictable task prompt using chat template."""
+    messages = [
+        {
+            "role": "system",
+            "content": f'print {count} times the word "{word}". only this, no extra text'
+        }
+    ]
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
+    )
     return prompt
 
 
@@ -125,7 +133,7 @@ def main():
     prompts: list[str] = []
     for count in COUNTS:
         for word in WORDS:
-            prompts.append(generate_prompt(count, word))
+            prompts.append(generate_prompt(tokenizer, count, word))
 
     print(f"Generating {len(prompts)} prompts (all combinations)...")
 

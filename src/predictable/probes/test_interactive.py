@@ -74,10 +74,13 @@ def load_models(probe_path: str):
     probe.load_state_dict(torch.load(probe_path, map_location=DEVICE, weights_only=True))
     probe.eval()
 
-    return model, tokenizer, probe
+    # Detect if probe uses log-space (check filename)
+    use_log = "log" in str(probe_path).lower()
+
+    return model, tokenizer, probe, use_log
 
 
-def generate_with_predictions(model, tokenizer, probe, prompt: str, max_new_tokens: int = 200):
+def generate_with_predictions(model, tokenizer, probe, prompt: str, max_new_tokens: int = 200, use_log: bool = False):
     """
     Generate tokens using model.generate() and show predictions at each step.
     Exactly matches the training data generation approach.
@@ -106,8 +109,12 @@ def generate_with_predictions(model, tokenizer, probe, prompt: str, max_new_toke
     generated_ids = outputs.sequences[0][input_length:]
     total_generated_tokens = len(generated_ids)
 
-    print(f"{'Step':<6} | {'Token':<20} | {'Actual Remaining':<18} | {'Predicted Remaining':<20} | {'Error':<10}")
-    print("-" * 80)
+    print(f"{'Step':<6} | {'Token':<20} | {'Actual':<8} | {'Predicted':<10} | {'Error':<8} | {'Rel Error':<10}")
+    print("-" * 90)
+
+    # Track errors for summary statistics
+    all_errors = []
+    all_rel_errors = []
 
     # Iterate through each generation step - SAME AS TRAINING
     for step_idx, step_hidden_states in enumerate(outputs.hidden_states):
@@ -116,7 +123,12 @@ def generate_with_predictions(model, tokenizer, probe, prompt: str, max_new_toke
         last_token_hidden = last_layer[0, -1, :]  # Shape: (hidden_dim,)
 
         # Predict remaining tokens with probe
-        predicted_remaining = probe(last_token_hidden.unsqueeze(0)).item()
+        predicted_log = probe(last_token_hidden.unsqueeze(0)).item()
+        # Convert from log space if needed
+        if use_log:
+            predicted_remaining = max(0, torch.exp(torch.tensor(predicted_log)).item() - 1)
+        else:
+            predicted_remaining = predicted_log
 
         # Calculate actual remaining tokens
         tokens_generated_so_far = step_idx + 1
@@ -126,10 +138,45 @@ def generate_with_predictions(model, tokenizer, probe, prompt: str, max_new_toke
         token_id = generated_ids[step_idx]
         token_text = tokenizer.decode(token_id)
 
-        # Calculate error
-        error = abs(predicted_remaining - actual_remaining)
+        # Escape whitespace characters for display
+        token_display = token_text.replace('\n', '\\n').replace('\t', '\\t').replace('\r', '\\r').replace(' ', '·')
 
-        print(f"{step_idx+1:<6} | {token_text:<20} | {actual_remaining:<18} | {predicted_remaining:<20.2f} | {error:<10.2f}")
+        # Calculate errors
+        abs_error = abs(predicted_remaining - actual_remaining)
+        # Only compute relative error if actual_remaining > 5 to avoid division issues
+        if actual_remaining > 5:
+            rel_error = abs_error / actual_remaining
+            rel_error_display = f"{rel_error*100:.1f}%"
+        else:
+            rel_error = None
+            rel_error_display = "N/A"
+
+        all_errors.append(abs_error)
+        if rel_error is not None:
+            all_rel_errors.append(rel_error)
+
+        print(f"{step_idx+1:<6} | {token_display:<20} | {actual_remaining:<8} | {predicted_remaining:<10.2f} | {abs_error:<8.2f} | {rel_error_display:<10}")
+
+    # Show summary statistics
+    import numpy as np
+    mean_abs_error = np.mean(all_errors)
+
+    if len(all_rel_errors) > 0:
+        mean_rel_error = np.mean(all_rel_errors)
+        mape = mean_rel_error * 100
+    else:
+        mean_rel_error = 0.0
+        mape = 0.0
+
+    print(f"\n{'='*80}")
+    print("Summary Statistics:")
+    print(f"{'='*80}")
+    print(f"Mean Absolute Error (MAE): {mean_abs_error:.2f} tokens")
+    if len(all_rel_errors) > 0:
+        print(f"Mean Absolute Percentage Error (MAPE): {mape:.2f}% (computed only for remaining > 5)")
+        print(f"Relative MAE: {mean_rel_error:.4f}")
+    else:
+        print(f"MAPE/RelMAE: N/A (no samples with remaining > 5)")
 
     # Show full generation
     full_output = tokenizer.decode(generated_ids, skip_special_tokens=True)
@@ -143,7 +190,8 @@ def generate_with_predictions(model, tokenizer, probe, prompt: str, max_new_toke
 def main():
     parser = argparse.ArgumentParser(description="Interactively test linear probe predictions")
     parser.add_argument("--probe", type=str, default=None, help="Path to trained probe model (.pt file). If not provided, uses best model based on R²")
-    parser.add_argument("--prompt", type=str, default=None, help="Input prompt (if not provided, will ask interactively)")
+    parser.add_argument("--prompt", type=str, default=None, help="User message content (will be formatted with chat template)")
+    parser.add_argument("--raw_prompt", type=str, default=None, help="Raw pre-formatted prompt (bypasses chat template)")
     parser.add_argument("--max_tokens", type=int, default=200, help="Maximum tokens to generate")
     args = parser.parse_args()
 
@@ -153,17 +201,33 @@ def main():
     else:
         probe_path = find_best_probe()
 
-    # Get prompt
-    if args.prompt:
-        prompt = args.prompt
-    else:
-        prompt = input("Enter prompt: ")
-
     # Load models
-    model, tokenizer, probe = load_models(probe_path)
+    model, tokenizer, probe, use_log = load_models(probe_path)
+
+    # Get prompt
+    if args.raw_prompt:
+        # Use raw prompt directly (for backward compatibility)
+        prompt = args.raw_prompt
+    elif args.prompt:
+        # Apply chat template
+        messages = [{"role": "system", "content": args.prompt}]
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+    else:
+        # Interactive input
+        user_content = input("Enter instruction: ")
+        messages = [{"role": "system", "content": user_content}]
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
 
     # Generate with predictions
-    generate_with_predictions(model, tokenizer, probe, prompt, args.max_tokens)
+    generate_with_predictions(model, tokenizer, probe, prompt, args.max_tokens, use_log=use_log)
 
 
 if __name__ == "__main__":
