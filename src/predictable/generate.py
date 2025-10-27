@@ -21,7 +21,7 @@ DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 # Prompt templates
-COUNTS = list(range(5, 6))  # X: how many times to print
+COUNTS = list(range(5, 50))  # X: how many times to print
 WORDS = ["hello", "world", "cat", "dog", "python", "test", "apple", "blue", "sun", "code"]
 
 
