@@ -1,0 +1,3 @@
+<|start_header_id|>system<|end_header_id|>
+generate the word "hello" for 10 times. do not add extra text
+<|eot_id|><|start_header _id|>assistant<|end_header_id|>

@@ -15,13 +15,13 @@ import os
 load_dotenv()
 
 # Configuration
-MODEL_NAME = "meta-llama/Llama-3.2-3B"
+MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 OUTPUT_DIR = Path(__file__).parent / "data"
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 # Prompt templates
-COUNTS = list(range(5, 50))  # X: how many times to print
+COUNTS = list(range(5, 40))  # X: how many times to print
 WORDS = ["hello", "world", "cat", "dog", "python", "test", "apple", "blue", "sun", "code"]
 
 
