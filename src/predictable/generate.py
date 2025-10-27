@@ -21,13 +21,16 @@ DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 # Prompt templates
-COUNTS = list(range(5, 40))  # X: how many times to print
+COUNTS = list(range(5, 6))  # X: how many times to print
 WORDS = ["hello", "world", "cat", "dog", "python", "test", "apple", "blue", "sun", "code"]
 
 
 def generate_prompt(count: int, word: str) -> str:
     """Generate a predictable task prompt."""
-    return f'print {count} times the word "{word}". only this, no extra text'
+    prompt = f"""<|start_header_id|>system<|end_header_id|>
+print {count} times the word "{word}". only this, no extra text
+<|eot_id|><|start_header _id|>assistant<|end_header_id|>"""
+    return prompt
 
 
 def load_model():
@@ -131,10 +134,8 @@ def main():
     hidden_states_array = np.array(all_hidden_states)
     remaining_tokens_array = np.array(all_remaining_tokens)
 
-    # Shuffle and split into train/val
-    np.random.seed(42)
+    # split into train/val
     indices = np.arange(len(hidden_states_array))
-    np.random.shuffle(indices)
 
     # 90/10 split
     split_idx = int(0.9 * len(indices))
