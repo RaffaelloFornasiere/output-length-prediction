@@ -55,7 +55,7 @@ def load_model():
 def extract_hidden_states(model, tokenizer, prompt: str):
     """
     Generate text and extract hidden states at each step.
-    Returns lists of hidden states and remaining tokens.
+    Returns lists of hidden states, remaining tokens, and token metadata.
     """
     # Tokenize input
     inputs = tokenizer(prompt, return_tensors="pt").to(DEVICE)
@@ -82,6 +82,7 @@ def extract_hidden_states(model, tokenizer, prompt: str):
     # Each step: (layer_0, layer_1, ..., layer_L)
     hidden_states = []
     remaining_tokens_list = []
+    token_metadata = []
 
     for step_idx, step_hidden_states in enumerate(outputs.hidden_states):
         # Get last layer
@@ -94,10 +95,18 @@ def extract_hidden_states(model, tokenizer, prompt: str):
         tokens_generated_so_far = step_idx + 1
         remaining_tokens = total_generated_tokens - tokens_generated_so_far
 
+        # Get token ID and decoded text
+        token_id = generated_ids[step_idx].item()
+        token_text = tokenizer.decode([token_id])
+
         hidden_states.append(last_token_state)
         remaining_tokens_list.append(remaining_tokens)
+        token_metadata.append({
+            'token_id': token_id,
+            'token_text': token_text,
+        })
 
-    return hidden_states, remaining_tokens_list
+    return hidden_states, remaining_tokens_list, token_metadata
 
 
 def main():
@@ -110,6 +119,7 @@ def main():
     # Storage
     all_hidden_states = []
     all_remaining_tokens = []
+    all_token_metadata = []
 
     # Generate all combinations of counts and words
     prompts: list[str] = []
@@ -121,9 +131,10 @@ def main():
 
     for prompt in tqdm(prompts):
         try:
-            hidden_states, remaining_tokens = extract_hidden_states(model, tokenizer, prompt)
+            hidden_states, remaining_tokens, token_metadata = extract_hidden_states(model, tokenizer, prompt)
             all_hidden_states.extend(hidden_states)
             all_remaining_tokens.extend(remaining_tokens)
+            all_token_metadata.extend(token_metadata)
 
         except Exception as e:
             print(f"\nError on prompt '{prompt}': {e}")
@@ -133,6 +144,12 @@ def main():
     print(f"\nProcessing {len(all_hidden_states)} data points...")
     hidden_states_array = np.array(all_hidden_states)
     remaining_tokens_array = np.array(all_remaining_tokens)
+
+    # Create structured array for token metadata
+    token_metadata_array = np.array(
+        [(m['token_id'], m['token_text']) for m in all_token_metadata],
+        dtype=[('token_id', 'i4'), ('token_text', 'U100')]  # U100 = Unicode string up to 100 chars
+    )
 
     # split into train/val
     indices = np.arange(len(hidden_states_array))
@@ -145,15 +162,21 @@ def main():
     # Split data
     train_hidden_states = hidden_states_array[train_indices]
     train_remaining_tokens = remaining_tokens_array[train_indices]
+    train_token_metadata = token_metadata_array[train_indices]
+
     val_hidden_states = hidden_states_array[val_indices]
     val_remaining_tokens = remaining_tokens_array[val_indices]
+    val_token_metadata = token_metadata_array[val_indices]
 
     # Save splits
     print(f"Saving train ({len(train_indices)}) and val ({len(val_indices)}) splits...")
     np.save(OUTPUT_DIR / "train_hidden_states.npy", train_hidden_states)
     np.save(OUTPUT_DIR / "train_remaining_tokens.npy", train_remaining_tokens)
+    np.save(OUTPUT_DIR / "train_token_metadata.npy", train_token_metadata)
+
     np.save(OUTPUT_DIR / "val_hidden_states.npy", val_hidden_states)
     np.save(OUTPUT_DIR / "val_remaining_tokens.npy", val_remaining_tokens)
+    np.save(OUTPUT_DIR / "val_token_metadata.npy", val_token_metadata)
 
     print(f"Saved to {OUTPUT_DIR}")
     print(f"Train: {train_hidden_states.shape}, Val: {val_hidden_states.shape}")
