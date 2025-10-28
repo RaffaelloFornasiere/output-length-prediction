@@ -1,1 +1,1 @@
-print 10 times the word "hello". only this, no extra text
+you have to print the word "firefox" 20 times. Print only that, no extra tex

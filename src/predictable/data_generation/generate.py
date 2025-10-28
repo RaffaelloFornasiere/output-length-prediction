@@ -2,6 +2,7 @@
 Generate data for predictable task: "print X times the word Y"
 Extracts hidden states (last token, last layer) at each generation step.
 """
+import random
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -10,7 +11,7 @@ from pathlib import Path
 from tqdm import tqdm
 from dotenv import load_dotenv
 import os
-
+from predictable.data_generation.prompts import prompts
 # Load environment variables
 load_dotenv()
 
@@ -27,10 +28,11 @@ WORDS = ["hello", "world", "cat", "dog", "python", "test", "apple", "blue", "sun
 
 def generate_prompt(tokenizer, count: int, word: str) -> str:
     """Generate a predictable task prompt using chat template."""
+    prompt = random.choice(prompts)
     messages = [
         {
-            "role": "system",
-            "content": f'print {count} times the word "{word}". only this, no extra text'
+            "role": "user",
+            "content": prompt.format(count=count, word=word)
         }
     ]
     prompt = tokenizer.apply_chat_template(

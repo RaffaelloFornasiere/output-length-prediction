@@ -9,6 +9,7 @@ from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import argparse
+from scipy.stats import spearmanr
 
 
 # Configuration
@@ -113,6 +114,10 @@ def evaluate(model, val_loader, criterion, original_labels, use_log=True):
     all_predictions_log = torch.cat(all_predictions_log)
     all_labels_log = torch.cat(all_labels_log)
 
+    # Log-space metrics
+    mae_log = torch.mean(torch.abs(all_predictions_log - all_labels_log)).item()
+    rmse_log = torch.sqrt(torch.mean((all_predictions_log - all_labels_log) ** 2)).item()
+
     # Convert back from log space to original space
     if use_log:
         all_predictions = torch.exp(all_predictions_log) - 1
@@ -142,7 +147,13 @@ def evaluate(model, val_loader, criterion, original_labels, use_log=True):
     ss_tot = torch.sum((all_labels - torch.mean(all_labels)) ** 2)
     r2 = 1 - (ss_res / ss_tot)
 
-    return total_loss / len(val_loader), mae, rmse, r2.item(), mape, rel_mae
+    # Spearman correlation (rank-based, measures ordering)
+    spearman_corr, _ = spearmanr(
+        all_predictions.squeeze().numpy(),
+        all_labels.squeeze().numpy()
+    )
+
+    return total_loss / len(val_loader), mae, rmse, r2.item(), mape, rel_mae, mae_log, rmse_log, spearman_corr
 
 
 def main():
@@ -178,23 +189,27 @@ def main():
 
     for epoch in tqdm(range(args.epochs), desc="Training"):
         train_loss = train_epoch(model, train_loader, criterion, optimizer)
-        val_loss, mae, rmse, r2, mape, rel_mae = evaluate(model, val_loader, criterion, val_labels, use_log=use_log)
+        val_loss, mae, rmse, r2, mape, rel_mae, mae_log, rmse_log, spearman = evaluate(model, val_loader, criterion, val_labels, use_log=use_log)
 
         # Print metrics every 5 epochs
         if (epoch + 1) % 5 == 0 or epoch == 0:
             tqdm.write(
                 f"Epoch {epoch+1:5d} | "
                 f"Train Loss: {train_loss:.4f} | "
-                f"Val MAE: {mae:.4f} RMSE: {rmse:.4f} R²: {r2:.4f} MAPE: {mape:.2f}% RelMAE: {rel_mae:.4f}"
+                f"Val Loss: {val_loss:.4f} MAE(log): {mae_log:.4f} | "
+                f"MAE: {mae:.2f} R²: {r2:.4f} MAPE: {mape:.1f}% Spearman: {spearman:.4f}"
             )
 
     # Save final model with metrics
-    final_val_loss, final_mae, final_rmse, final_r2, final_mape, final_rel_mae = evaluate(model, val_loader, criterion, val_labels, use_log=use_log)
-    filename = f"linear_log_e{args.epochs}_bs{args.batch_size}_lr{args.lr}_mae{final_mae:.2f}_mape{final_mape:.1f}_r2{final_r2:.2f}.pt"
+    final_val_loss, final_mae, final_rmse, final_r2, final_mape, final_rel_mae, final_mae_log, final_rmse_log, final_spearman = evaluate(model, val_loader, criterion, val_labels, use_log=use_log)
+    filename = f"linear_log_e{args.epochs}_bs{args.batch_size}_lr{args.lr}_spear{final_spearman:.3f}_r2{final_r2:.2f}.pt"
     torch.save(model.state_dict(), OUTPUT_DIR / filename)
 
     print(f"\nTraining complete!")
-    print(f"Final metrics - MAE: {final_mae:.4f}, MAPE: {final_mape:.2f}%, RelMAE: {final_rel_mae:.4f}, R²: {final_r2:.4f}")
+    print(f"Final metrics:")
+    print(f"  Log-space: MAE={final_mae_log:.4f}, RMSE={final_rmse_log:.4f}")
+    print(f"  Original-space: MAE={final_mae:.2f}, MAPE={final_mape:.1f}%, R²={final_r2:.4f}")
+    print(f"  Spearman correlation: {final_spearman:.4f}")
     print(f"Model saved to {OUTPUT_DIR / filename}")
 
 
