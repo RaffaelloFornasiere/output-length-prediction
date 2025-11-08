@@ -10,7 +10,7 @@ import argparse
 from pathlib import Path
 from dotenv import load_dotenv
 import os
-from predictable.probes.linear import LinearProbe
+from predictable.probes.linear.linear import LinearProbe
 
 # Load environment variables
 load_dotenv()
