@@ -43,11 +43,12 @@ XX_dataset_name/
 - Tests robustness to prompt variation
 - Contains the original generated data (~49k tokens)
 
-#### 02_same_prompt_multi_layers 🚧 (template created)
-- Will extract hidden states from **multiple layers**
+#### 02_same_prompt_multi_layers ✓ (ready to generate)
+- Extracts hidden states from **ALL layers** (28 layers for Llama-3.2-3B)
 - Tests if different layers encode length information differently
 - Enables analysis of how length awareness develops through the model
-- Structure created, implementation pending
+- Total hidden dim: 86,016 (3072 × 28 layers concatenated)
+- Includes per-layer visualization and analysis
 
 ## Setup
 
