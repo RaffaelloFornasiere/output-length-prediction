@@ -1,39 +1,35 @@
 """
-Interactive testing script for linear probe.
-Loads trained probe and Llama 3.2 3B, generates tokens step-by-step,
-and shows predicted remaining tokens at each generation step.
+Shared utilities for testing probes interactively.
 """
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import argparse
 from pathlib import Path
-from dotenv import load_dotenv
-import os
-from predictable.probes.linear.linear import LinearProbe
-
-# Load environment variables
-load_dotenv()
-
-# Configuration
-MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
-PROBE_DIR = Path(__file__).parent / "outputs"
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
-HF_TOKEN = os.getenv("HF_TOKEN")
+import numpy as np
 
 
-def find_best_probe() -> Path:
-    """Find the best trained probe based on R² score from filename."""
-    probe_files = list(PROBE_DIR.glob("linear_*.pt"))
+def find_best_probe(probe_dir: Path, pattern: str = "*.pt") -> Path:
+    """Find the best trained probe based on R² score from filename.
+
+    Args:
+        probe_dir: Directory containing probe model files
+        pattern: Glob pattern for probe files (default: "*.pt")
+
+    Returns:
+        Path to the best probe model
+
+    Raises:
+        FileNotFoundError: If no probe models found
+        ValueError: If no valid R² scores could be parsed
+    """
+    probe_files = list(probe_dir.glob(pattern))
 
     if not probe_files:
-        raise FileNotFoundError(f"No probe models found in {PROBE_DIR}")
+        raise FileNotFoundError(f"No probe models found in {probe_dir}")
 
     best_probe = None
     best_r2 = -float('inf')
 
     for probe_file in probe_files:
-        # Parse R² from filename: linear_e50_bs64_lr0.001_mae19.00_r20.79.pt
         try:
             parts = probe_file.stem.split('_')
             r2_part = [p for p in parts if p.startswith('r2')][0]
@@ -52,45 +48,34 @@ def find_best_probe() -> Path:
     return best_probe
 
 
-def load_models(probe_path: str):
-    """Load both the language model and the trained probe."""
-    print(f"Loading Llama 3.2 3B on {DEVICE}...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=HF_TOKEN)
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
-        dtype=torch.float32,  # Keep float32 for MPS compatibility
-        device_map=DEVICE,
-        token=HF_TOKEN,
-    )
-    model.eval()
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    print(f"Loading probe from {probe_path}...")
-    # Infer hidden_dim from model config
-    hidden_dim = model.config.hidden_size
-    probe = LinearProbe(hidden_dim).to(DEVICE)
-    probe.load_state_dict(torch.load(probe_path, map_location=DEVICE, weights_only=True))
-    probe.eval()
-
-    # Detect if probe uses log-space (check filename)
-    use_log = "log" in str(probe_path).lower()
-
-    return model, tokenizer, probe, use_log
-
-
-def generate_with_predictions(model, tokenizer, probe, prompt: str, max_new_tokens: int = 200, use_log: bool = False):
+def generate_with_predictions(
+    model,
+    tokenizer,
+    probe,
+    prompt: str,
+    max_new_tokens: int = 200,
+    use_log: bool = False,
+    device: str = "cpu"
+):
     """
     Generate tokens using model.generate() and show predictions at each step.
     Exactly matches the training data generation approach.
+
+    Args:
+        model: Language model
+        tokenizer: Tokenizer
+        probe: Trained probe model
+        prompt: Input prompt
+        max_new_tokens: Maximum tokens to generate
+        use_log: Whether probe predicts in log-space
+        device: Device to run on
     """
     print(f"\n{'='*80}")
     print(f"Prompt: {prompt}")
     print(f"{'='*80}\n")
 
     # Tokenize input
-    inputs = tokenizer(prompt, return_tensors="pt").to(DEVICE)
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
     input_length = inputs.input_ids.shape[1]
 
     # Generate with hidden states - SAME AS TRAINING
@@ -158,7 +143,6 @@ def generate_with_predictions(model, tokenizer, probe, prompt: str, max_new_toke
         print(f"{step_idx+1:<6} | {token_display:<20} | {actual_remaining:<8} | {predicted_remaining:<10.2f} | {abs_error:<8.2f} | {rel_error_display:<10}")
 
     # Show summary statistics
-    import numpy as np
     mean_abs_error = np.mean(all_errors)
 
     if len(all_rel_errors) > 0:
@@ -185,50 +169,3 @@ def generate_with_predictions(model, tokenizer, probe, prompt: str, max_new_toke
     print(f"{'='*80}")
     print(full_output)
     print(f"\nTotal tokens generated: {total_generated_tokens}")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Interactively test linear probe predictions")
-    parser.add_argument("--probe", type=str, default=None, help="Path to trained probe model (.pt file). If not provided, uses best model based on R²")
-    parser.add_argument("--prompt", type=str, default=None, help="User message content (will be formatted with chat template)")
-    parser.add_argument("--raw_prompt", type=str, default=None, help="Raw pre-formatted prompt (bypasses chat template)")
-    parser.add_argument("--max_tokens", type=int, default=200, help="Maximum tokens to generate")
-    args = parser.parse_args()
-
-    # Get probe path
-    if args.probe:
-        probe_path = args.probe
-    else:
-        probe_path = find_best_probe()
-
-    # Load models
-    model, tokenizer, probe, use_log = load_models(probe_path)
-
-    # Get prompt
-    if args.raw_prompt:
-        # Use raw prompt directly (for backward compatibility)
-        prompt = args.raw_prompt
-    elif args.prompt:
-        # Apply chat template
-        messages = [{"role": "system", "content": args.prompt}]
-        prompt = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-    else:
-        # Interactive input
-        user_content = input("Enter instruction: ")
-        messages = [{"role": "system", "content": user_content}]
-        prompt = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-
-    # Generate with predictions
-    generate_with_predictions(model, tokenizer, probe, prompt, args.max_tokens, use_log=use_log)
-
-
-if __name__ == "__main__":
-    main()

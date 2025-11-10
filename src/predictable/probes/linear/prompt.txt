@@ -1,1 +1,0 @@
-you have to print the word "firefox" 20 times. Print only that, no extra tex
