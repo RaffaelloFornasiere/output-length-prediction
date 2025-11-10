@@ -46,10 +46,7 @@ def load_models(probe_path: Path):
     probe.load_state_dict(torch.load(probe_path, map_location=DEVICE, weights_only=True))
     probe.eval()
 
-    # Detect if probe uses log-space (check filename)
-    use_log = "log" in str(probe_path).lower()
-
-    return model, tokenizer, probe, use_log
+    return model, tokenizer, probe
 
 
 def main():
@@ -67,7 +64,7 @@ def main():
         probe_path = find_best_probe(PROBE_DIR, pattern="linear_*.pt")
 
     # Load models
-    model, tokenizer, probe, use_log = load_models(probe_path)
+    model, tokenizer, probe = load_models(probe_path)
 
     # Get prompt
     if args.raw_prompt:
@@ -92,7 +89,7 @@ def main():
         )
 
     # Generate with predictions
-    generate_with_predictions(model, tokenizer, probe, prompt, args.max_tokens, use_log, DEVICE)
+    generate_with_predictions(model, tokenizer, probe, prompt, args.max_tokens, DEVICE)
 
 
 if __name__ == "__main__":

@@ -54,7 +54,6 @@ def generate_with_predictions(
     probe,
     prompt: str,
     max_new_tokens: int = 200,
-    use_log: bool = False,
     device: str = "cpu"
 ):
     """
@@ -67,7 +66,6 @@ def generate_with_predictions(
         probe: Trained probe model
         prompt: Input prompt
         max_new_tokens: Maximum tokens to generate
-        use_log: Whether probe predicts in log-space
         device: Device to run on
     """
     print(f"\n{'='*80}")
@@ -94,8 +92,8 @@ def generate_with_predictions(
     generated_ids = outputs.sequences[0][input_length:]
     total_generated_tokens = len(generated_ids)
 
-    print(f"{'Step':<6} | {'Token':<20} | {'Actual':<8} | {'Predicted':<10} | {'Error':<8} | {'Rel Error':<10}")
-    print("-" * 90)
+    print(f"{'Step':<6} | {'Token':<20} | {'Actual':<8} | {'Predicted':<10} | {'Error':<10} | {'Rel Error':<10}")
+    print("-" * 92)
 
     # Track errors for summary statistics
     all_errors = []
@@ -107,13 +105,8 @@ def generate_with_predictions(
         last_layer = step_hidden_states[-1]  # Shape: (batch=1, seq_len, hidden_dim)
         last_token_hidden = last_layer[0, -1, :]  # Shape: (hidden_dim,)
 
-        # Predict remaining tokens with probe
-        predicted_log = probe(last_token_hidden.unsqueeze(0)).item()
-        # Convert from log space if needed
-        if use_log:
-            predicted_remaining = max(0, torch.exp(torch.tensor(predicted_log)).item() - 1)
-        else:
-            predicted_remaining = predicted_log
+        # Predict remaining tokens with probe (model outputs in original space due to Softplus)
+        predicted_remaining = probe(last_token_hidden.unsqueeze(0)).item()
 
         # Calculate actual remaining tokens
         tokens_generated_so_far = step_idx + 1
@@ -140,7 +133,18 @@ def generate_with_predictions(
         if rel_error is not None:
             all_rel_errors.append(rel_error)
 
-        print(f"{step_idx+1:<6} | {token_display:<20} | {actual_remaining:<8} | {predicted_remaining:<10.2f} | {abs_error:<8.2f} | {rel_error_display:<10}")
+        # Format numbers with scientific notation if they're very large
+        if abs(predicted_remaining) >= 1e6:
+            pred_display = f"{predicted_remaining:.2e}"
+        else:
+            pred_display = f"{predicted_remaining:.2f}"
+
+        if abs(abs_error) >= 1e6:
+            error_display = f"{abs_error:.2e}"
+        else:
+            error_display = f"{abs_error:.2f}"
+
+        print(f"{step_idx+1:<6} | {token_display:<20} | {actual_remaining:<8} | {pred_display:<10} | {error_display:<10} | {rel_error_display:<10}")
 
     # Show summary statistics
     mean_abs_error = np.mean(all_errors)

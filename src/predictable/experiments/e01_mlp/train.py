@@ -9,7 +9,7 @@ from tqdm import tqdm
 import argparse
 from typing import Union, List
 
-from predictable.experiments.utils import load_data, train_epoch, evaluate
+from predictable.experiments.utils import load_data, train_epoch, evaluate, LogMSELoss
 
 
 # Configuration
@@ -19,7 +19,7 @@ DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 
 
 class MLPProbe(nn.Module):
-    """MLP probe with configurable hidden layers and dropout."""
+    """MLP probe with configurable hidden layers, dropout, and softplus output activation."""
 
     def __init__(self, input_dim: int, hidden_dims: Union[int, List[int]] = 512, dropout: float = 0.1):
         """
@@ -50,6 +50,7 @@ class MLPProbe(nn.Module):
 
         # Output layer
         layers.append(nn.Linear(prev_dim, 1))
+        layers.append(nn.Softplus())  # Ensure positive outputs
 
         self.network = nn.Sequential(*layers)
 
@@ -93,9 +94,8 @@ def main():
     # Determine data directory
     data_dir = Path(args.data_dir) if args.data_dir else DATA_DIR
 
-    # Load data with log transformation
-    use_log = True
-    train_loader, val_loader, val_labels = load_data(data_dir, args.batch_size, use_log=use_log)
+    # Load data
+    train_loader, val_loader, val_labels = load_data(data_dir, args.batch_size)
 
     # Infer input_dim from data
     sample_batch = next(iter(train_loader))
@@ -107,10 +107,10 @@ def main():
     print(f"Input dimension: {input_dim}")
     print(f"Hidden dimensions: {hidden_dims}")
     print(f"Dropout: {args.dropout}")
-    print(f"Using log-space predictions: {use_log}")
+    print(f"Using LogMSELoss (model predicts in original space)")
 
     model = MLPProbe(input_dim, hidden_dims=hidden_dims, dropout=args.dropout).to(DEVICE)
-    criterion = nn.MSELoss()
+    criterion = LogMSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     # Training loop
@@ -121,9 +121,7 @@ def main():
 
     for epoch in tqdm(range(args.epochs), desc="Training"):
         train_loss = train_epoch(model, train_loader, criterion, optimizer, DEVICE)
-        val_loss, mae, rmse, r2, mape, rel_mae, mae_log, rmse_log, spearman = evaluate(
-            model, val_loader, criterion, val_labels, DEVICE, use_log=use_log
-        )
+        val_loss, metrics = evaluate(model, val_loader, criterion, DEVICE)
 
         # Track best model by validation loss
         if val_loss < best_val_loss:
@@ -132,14 +130,7 @@ def main():
                 'state_dict': model.state_dict(),
                 'metrics': {
                     'val_loss': val_loss,
-                    'mae': mae,
-                    'rmse': rmse,
-                    'r2': r2,
-                    'mape': mape,
-                    'rel_mae': rel_mae,
-                    'mae_log': mae_log,
-                    'rmse_log': rmse_log,
-                    'spearman': spearman
+                    **metrics
                 }
             }
 
@@ -148,8 +139,8 @@ def main():
             tqdm.write(
                 f"Epoch {epoch+1:5d} | "
                 f"Train Loss: {train_loss:.4f} | "
-                f"Val Loss: {val_loss:.4f} MAE(log): {mae_log:.4f} | "
-                f"MAE: {mae:.2f} R²: {r2:.4f} MAPE: {mape:.1f}% Spearman: {spearman:.4f}"
+                f"Val Loss: {val_loss:.4f} MAE(log): {metrics['mae_log']:.4f} | "
+                f"MAE: {metrics['mae']:.2f} R²: {metrics['r2']:.4f} MAPE: {metrics['mape']:.1f}% Spearman: {metrics['spearman']:.4f}"
             )
 
     # Use best model metrics for filename
