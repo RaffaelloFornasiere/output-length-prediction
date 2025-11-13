@@ -60,7 +60,7 @@ MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"  # Can be changed per dataset
 OUTPUT_DIR = Path(__file__).parent / "data"
 
 # Parameters to vary
-COUNTS = list(range(10, 15))  # X: how many times to print
+COUNTS = list(range(10, 50))  # X: how many times to print
 WORDS = ["hello", "world", "cat", "dog", "python", "test", "apple", "blue", "sun", "code"]
 
 
